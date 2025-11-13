@@ -1,4 +1,4 @@
-# 🖥️ 4MAC2SCREEN  
+# 🖥️ 4mac2screen  
 > **Wireless macOS screen mirroring — zero latency, native quality, no middleman.**  
 > Like Deskreen, but built for macOS with **WebRTC + SimplePeer** — direct, efficient, and sleek.
 
