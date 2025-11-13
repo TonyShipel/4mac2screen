@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Renderer</title>
+</head>
+<body>
+  <script>
+    const { ipcRenderer } = require('electron');
+    const SimplePeer = require('simple-peer');
+    const io = require('socket.io-client');
+
+    // Map to store multiple simultaneous streams: roomId -> { peer, stream, displayId, settings, isStarting }
+    const activeStreams = new Map();
+    let socket = null;
+    
+    // Default settings for new streams
+    let defaultSettings = {
+      resolution: null, // null = native resolution (no constraints)
+      bitrate: 1500000, // 1.5 Mbps - optimal balance between latency and quality
+      fps: 30
+    };
+    
+    // Listen for default settings update from main process
+    ipcRenderer.on('update-default-settings', (event, settings) => {
+      console.log('Updating default settings:', settings);
+      defaultSettings = settings || defaultSettings;
+    });
+
+    // Connect to Socket.IO server
+    socket = io('http://localhost:3001');
+
+    socket.on('connect', () => {
+      console.log('Renderer connected to Socket.IO');
+    });
+
+    socket.on('disconnect', () => {
+      console.log('Renderer disconnected from Socket.IO');
+    });
+
+    // Listen for joined confirmation
+    socket.on('joined', (data) => {
+      console.log('Renderer joined room:', data);
+    });
+
+    // Listen for WebRTC signals from clients
+    socket.on('webrtc-signal', (data) => {
+      console.log('Renderer received signal:', data);
+      // Find the stream for this room
+      const streamInfo = activeStreams.get(data.roomId);
+      if (streamInfo && streamInfo.peer && data.socketId && data.socketId !== socket.id) {
+        try {
+          console.log('Renderer signaling peer with client signal for room:', data.roomId);
+          streamInfo.peer.signal(data.signal);
+        } catch (err) {
+          console.error('Error signaling peer:', err);
+        }
+      } else {
+        console.log('Renderer ignoring signal - peer not ready or wrong room/sender');
+      }
+    });
+
+    // Listen for start WebRTC command
+    ipcRenderer.on('start-webrtc', async (event, { displayId, roomId, socketId }) => {
+      console.log('Starting WebRTC for display:', displayId, 'room:', roomId);
+      
+      // Check if stream already exists for this room
+      const existingStream = activeStreams.get(roomId);
+      if (existingStream && existingStream.peer && existingStream.stream) {
+        console.log('Reusing existing WebRTC connection for room:', roomId);
+        return;
+      }
+      
+      // Check if already starting for this room
+      if (existingStream && existingStream.isStarting) {
+        console.log('Already starting WebRTC for room:', roomId, 'ignoring duplicate request');
+        return;
+      }
+      
+      // Create stream info object
+      const streamInfo = {
+        displayId: displayId,
+        roomId: roomId,
+        peer: null,
+        stream: null,
+        settings: { ...defaultSettings },
+        isStarting: true
+      };
+      activeStreams.set(roomId, streamInfo);
+      
+      // Join the room to receive signals (must be done before creating peer)
+      socket.emit('join-room', {
+        roomId: roomId,
+        displayId: displayId
+      });
+      
+      // Wait a bit for room join to complete (reduced delay for lower latency)
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      try {
+        // Get MediaStream for the display
+        console.log('Getting MediaStream for display:', displayId, 'with settings:', streamInfo.settings);
+        console.log('Using source ID for capture:', displayId);
+        // Use native resolution if not specified (null = no constraints = native resolution)
+        const width = streamInfo.settings.resolution?.width || null;
+        const height = streamInfo.settings.resolution?.height || null;
+        const stream = await getDesktopSourceStream(
+          displayId,
+          width,
+          height,
+          streamInfo.settings.fps,
+          streamInfo.settings.fps
+        );
+        console.log('MediaStream obtained for room:', roomId, 'using source ID:', displayId);
+        console.log('Video tracks:', stream.getVideoTracks().length);
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          const settings = videoTrack.getSettings();
+          console.log('Video track settings:', settings);
+          console.log('Captured stream resolution:', settings.width, 'x', settings.height);
+        }
+        streamInfo.stream = stream;
+
+        // Create SimplePeer as initiator
+        console.log('Creating SimplePeer as initiator for room:', roomId);
+        // SDP transform function to optimize for low latency
+        const sdpTransform = (sdp) => {
+          let newSDP = sdp;
+          // Use current bitrate setting
+          newSDP = setSdpMediaBitrate(newSDP, 'video', streamInfo.settings.bitrate);
+          return newSDP;
+        };
+
+        const peer = new SimplePeer({
+          initiator: true,
+          stream: stream,
+          trickle: true, // Enable trickle ICE for lower latency
+          sdpTransform: sdpTransform,
+          config: {
+            iceServers: [],
+            iceCandidatePoolSize: 0 // Don't pre-gather candidates
+          }
+        });
+
+        streamInfo.peer = peer;
+
+        peer.on('signal', (signal) => {
+          // Send signal to server to forward to client
+          console.log('Renderer sending signal (offer) to room:', roomId, 'signal type:', signal.type);
+          socket.emit('webrtc-signal', {
+            roomId: roomId,
+            socketId: socket.id,
+            signal: signal
+          });
+        });
+
+        peer.on('connect', () => {
+          console.log('Renderer WebRTC connected for room:', roomId);
+        });
+
+        peer.on('error', (err) => {
+          console.error('Renderer WebRTC error for room:', roomId, err);
+        });
+
+        peer.on('close', () => {
+          console.log('Renderer WebRTC closed for room:', roomId);
+          // Clean up stream info when peer closes
+          cleanupStream(roomId);
+        });
+        
+        peer.on('stream', (remoteStream) => {
+          console.log('Renderer received remote stream (unexpected) for room:', roomId, remoteStream);
+        });
+        
+        streamInfo.isStarting = false;
+        console.log('WebRTC started successfully for room:', roomId);
+      } catch (error) {
+        console.error('Error starting WebRTC for room:', roomId, error);
+        cleanupStream(roomId);
+      }
+    });
+    
+    // Helper function to cleanup stream
+    function cleanupStream(roomId) {
+      const streamInfo = activeStreams.get(roomId);
+      if (streamInfo) {
+        if (streamInfo.peer) {
+          streamInfo.peer.destroy();
+        }
+        if (streamInfo.stream) {
+          streamInfo.stream.getTracks().forEach(track => track.stop());
+        }
+        activeStreams.delete(roomId);
+        console.log('Cleaned up stream for room:', roomId);
+      }
+    }
+    
+    // Cleanup all streams (when server stops)
+    function cleanupAllStreams() {
+      console.log('Cleaning up all streams...');
+      for (const [roomId, streamInfo] of activeStreams.entries()) {
+        if (streamInfo.peer) {
+          streamInfo.peer.destroy();
+        }
+        if (streamInfo.stream) {
+          streamInfo.stream.getTracks().forEach(track => track.stop());
+        }
+      }
+      activeStreams.clear();
+      console.log('All streams cleaned up');
+    }
+    
+    // Listen for stop all streams command
+    ipcRenderer.on('stop-all-streams', () => {
+      console.log('Received stop-all-streams command');
+      cleanupAllStreams();
+      
+      // Disconnect from Socket.IO
+      if (socket) {
+        socket.disconnect();
+        socket.removeAllListeners();
+        socket = null;
+      }
+      
+      // Don't reconnect immediately - wait for server to start again
+      // Reconnection will happen automatically when server starts
+    });
+    
+    // Reconnect to Socket.IO when server starts (called from main process)
+    ipcRenderer.on('server-started', () => {
+      console.log('Server started, reconnecting renderer to Socket.IO');
+      if (!socket || !socket.connected) {
+        socket = io('http://localhost:3001');
+        socket.on('connect', () => {
+          console.log('Renderer reconnected to Socket.IO after server start');
+        });
+        socket.on('disconnect', () => {
+          console.log('Renderer disconnected from Socket.IO');
+        });
+        socket.on('joined', (data) => {
+          console.log('Renderer joined room:', data);
+        });
+        socket.on('webrtc-signal', (data) => {
+          console.log('Renderer received signal:', data);
+          const streamInfo = activeStreams.get(data.roomId);
+          if (streamInfo && streamInfo.peer && data.socketId && data.socketId !== socket.id) {
+            try {
+              console.log('Renderer signaling peer with client signal for room:', data.roomId);
+              streamInfo.peer.signal(data.signal);
+            } catch (err) {
+              console.error('Error signaling peer:', err);
+            }
+          } else {
+            console.log('Renderer ignoring signal - peer not ready or wrong room/sender');
+          }
+        });
+      }
+    });
+
+    // Listen for stop WebRTC command
+    ipcRenderer.on('stop-webrtc', (event, { displayId, roomId }) => {
+      console.log('Stopping WebRTC for display:', displayId, 'room:', roomId);
+      cleanupStream(roomId);
+    });
+    
+    // Listen for stop all streams command (when server stops)
+    ipcRenderer.on('stop-all-streams', () => {
+      console.log('Stopping all streams (server stopped)');
+      // Clean up all active streams
+      for (const [roomId, streamInfo] of activeStreams.entries()) {
+        cleanupStream(roomId);
+      }
+      activeStreams.clear();
+    });
+    
+    // Listen for server started notification
+    ipcRenderer.on('server-started', () => {
+      console.log('Server started notification received');
+      // Reconnect Socket.IO if disconnected
+      if (!socket || !socket.connected) {
+        console.log('Reconnecting Socket.IO...');
+        socket = io('http://localhost:3001');
+        
+        socket.on('connect', () => {
+          console.log('Renderer reconnected to Socket.IO after server restart');
+        });
+      }
+    });
+
+    // Listen for settings update
+    ipcRenderer.on('update-settings', async (event, { displayId, roomId, resolution, bitrate, fps }) => {
+      console.log('Updating settings for room:', roomId, { resolution, bitrate, fps });
+      
+      const streamInfo = activeStreams.get(roomId);
+      if (!streamInfo) {
+        console.log('No active stream for room:', roomId, 'settings will apply on next connection');
+        return;
+      }
+      
+      // Store old settings before updating
+      const oldBitrate = streamInfo.settings.bitrate;
+      const oldResolution = streamInfo.settings.resolution;
+      const oldFPS = streamInfo.settings.fps;
+      
+      // Update settings
+      streamInfo.settings.resolution = resolution;
+      streamInfo.settings.bitrate = bitrate;
+      streamInfo.settings.fps = fps;
+      
+      // If we have an active stream, update it with new settings
+      if (streamInfo.stream && streamInfo.peer && streamInfo.displayId === displayId) {
+        try {
+          const oldStream = streamInfo.stream;
+          const oldVideoTrack = oldStream.getVideoTracks()[0];
+          const resolutionChanged = JSON.stringify(oldResolution) !== JSON.stringify(resolution);
+          const fpsChanged = oldFPS !== fps;
+          
+          // Only recreate stream if resolution or FPS changed
+          if (resolutionChanged || fpsChanged) {
+            console.log('Resolution or FPS changed, recreating stream for room:', roomId);
+            
+            try {
+              // Get new stream with new settings
+              // Use native resolution if not specified (null = no constraints = native resolution)
+              const width = resolution?.width || null;
+              const height = resolution?.height || null;
+              const newStream = await getDesktopSourceStream(
+                displayId,
+                width,
+                height,
+                fps,
+                fps
+              );
+              
+              // Log actual captured resolution
+              const videoTrack = newStream.getVideoTracks()[0];
+              if (videoTrack) {
+                const settings = videoTrack.getSettings();
+                console.log('New stream resolution for room', roomId, ':', settings.width, 'x', settings.height);
+              }
+              
+              // Replace video track in peer
+              if (oldVideoTrack && streamInfo.peer && streamInfo.peer.connected) {
+                const newVideoTrack = newStream.getVideoTracks()[0];
+                if (newVideoTrack) {
+                  try {
+                    await streamInfo.peer.replaceTrack(oldVideoTrack, newVideoTrack, oldStream);
+                    console.log('Video track replaced successfully for room:', roomId);
+                    
+                    // Stop old stream tracks after a short delay to ensure smooth transition
+                    setTimeout(() => {
+                      oldStream.getTracks().forEach(track => {
+                        if (track.readyState !== 'ended') {
+                          track.stop();
+                        }
+                      });
+                    }, 200);
+                    
+                    streamInfo.stream = newStream;
+                  } catch (replaceError) {
+                    console.error('Error replacing track for room:', roomId, replaceError);
+                    // If replaceTrack fails, stop the new stream and keep the old one
+                    newStream.getTracks().forEach(track => track.stop());
+                    // Don't throw - keep the old stream working
+                    console.log('Keeping old stream due to replaceTrack error');
+                  }
+                } else {
+                  console.error('No video track in new stream for room:', roomId);
+                  newStream.getTracks().forEach(track => track.stop());
+                }
+              } else {
+                // Peer not connected or no old track, just update the stream reference
+                console.log('Peer not connected or no old track, updating stream reference for room:', roomId);
+                if (oldStream) {
+                  oldStream.getTracks().forEach(track => {
+                    if (track.readyState !== 'ended') {
+                      track.stop();
+                    }
+                  });
+                }
+                streamInfo.stream = newStream;
+              }
+            } catch (streamError) {
+              console.error('Error creating new stream for room:', roomId, streamError);
+              // Don't throw - keep the old stream working
+              console.log('Keeping old stream due to stream creation error');
+            }
+          }
+          
+          // Bitrate change requires peer recreation, but we don't do it during active connection
+          // to avoid breaking the stream. Bitrate will apply on next connection.
+          if (oldBitrate !== bitrate) {
+            console.log('Bitrate changed for room', roomId, ', new bitrate will apply on next connection');
+            // Note: Bitrate in WebRTC is set in SDP during peer creation.
+            // Changing it requires recreating the peer, which would break the current connection.
+            // So we just update the setting and it will be used for the next connection.
+          }
+          
+          console.log('Settings updated successfully for room:', roomId);
+        } catch (error) {
+          console.error('Error updating settings for room:', roomId, error);
+          // Don't break the stream on error, just log it
+        }
+      } else {
+        // Just update settings for next connection
+        console.log('Settings updated (will apply on next connection) for room:', roomId);
+      }
+    });
+    
+    // Helper function for SDP bitrate (reuse from above)
+    function setSdpMediaBitrate(sdp, mediaType, bitrate) {
+      const sdpLines = sdp.split('\n');
+      let mediaLineIndex = -1;
+      const mediaLine = `m=${mediaType}`;
+      let bitrateLineIndex = -1;
+      const bitrateLine = `b=AS:${bitrate}`;
+      mediaLineIndex = sdpLines.findIndex((line) => line.startsWith(mediaLine));
+
+      if (mediaLineIndex && mediaLineIndex < sdpLines.length) {
+        bitrateLineIndex = mediaLineIndex + 1;
+        while (
+          sdpLines[bitrateLineIndex] && (
+            sdpLines[bitrateLineIndex].startsWith('i=') ||
+            sdpLines[bitrateLineIndex].startsWith('c=')
+          )
+        ) {
+          bitrateLineIndex += 1;
+        }
+
+        if (sdpLines[bitrateLineIndex] && sdpLines[bitrateLineIndex].startsWith('b=')) {
+          sdpLines[bitrateLineIndex] = bitrateLine;
+        } else {
+          sdpLines.splice(bitrateLineIndex, 0, bitrateLine);
+        }
+      }
+      return sdpLines.join('\n');
+    }
+
+    // Function to get MediaStream (same as deskreen)
+    async function getStreamWithSource(chromeMediaSource, sourceID, width, height, minFrameRate, maxFrameRate) {
+      if (width && height) {
+        return navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            // @ts-ignore: mandatory is supported in chromium but missing in types
+            mandatory: {
+              chromeMediaSource,
+              chromeMediaSourceId: sourceID,
+              minWidth: width,
+              maxWidth: width,
+              minHeight: height,
+              maxHeight: height,
+              minFrameRate,
+              maxFrameRate,
+            },
+          },
+        });
+      }
+
+      return navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          // @ts-ignore: mandatory is supported in chromium but missing in types
+          mandatory: {
+            chromeMediaSource,
+            chromeMediaSourceId: sourceID,
+            minFrameRate,
+            maxFrameRate,
+          },
+        },
+      });
+    }
+
+    // Get MediaStream with specified settings
+    async function getDesktopSourceStream(sourceID, width = null, height = null, minFrameRate = 30, maxFrameRate = 30) {
+      try {
+        return await getStreamWithSource('desktop', sourceID, width, height, minFrameRate, maxFrameRate);
+      } catch (desktopError) {
+        console.warn('Failed to capture desktop stream, retrying with screen source', desktopError);
+        return getStreamWithSource('screen', sourceID, width, height, minFrameRate, maxFrameRate);
+      }
+    }
+  </script>
+</body>
+</html>
+

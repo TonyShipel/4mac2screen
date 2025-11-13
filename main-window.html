@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Screen Streaming Control</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 20px;
+      padding: 30px;
+      backdrop-filter: blur(10px);
+    }
+    
+    h1 {
+      text-align: center;
+      margin-bottom: 30px;
+      font-size: 28px;
+    }
+    
+    .settings-section {
+      margin-bottom: 25px;
+    }
+    
+    .settings-section h2 {
+      font-size: 18px;
+      margin-bottom: 15px;
+      border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+      padding-bottom: 10px;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    
+    select, input {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.2);
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    
+    select option {
+      background: #764ba2;
+      color: white;
+    }
+    
+    select:hover, input:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    
+    .info-text {
+      font-size: 12px;
+      opacity: 0.8;
+      margin-top: 5px;
+      font-style: italic;
+    }
+    
+    .server-section {
+      margin-top: 30px;
+      padding-top: 25px;
+      border-top: 2px solid rgba(255, 255, 255, 0.3);
+    }
+    
+    .server-url {
+      background: rgba(255, 255, 255, 0.2);
+      padding: 15px;
+      border-radius: 10px;
+      margin: 15px 0;
+      font-size: 16px;
+      font-weight: 600;
+      text-align: center;
+      cursor: pointer;
+      user-select: all;
+      word-break: break-all;
+    }
+    
+    .server-url:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    
+    .server-url.inactive {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .button-group {
+      display: flex;
+      gap: 15px;
+      margin-top: 20px;
+    }
+    
+    button {
+      flex: 1;
+      padding: 15px 25px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    
+    .btn-start {
+      background: #4CAF50;
+      color: white;
+    }
+    
+    .btn-start:hover:not(:disabled) {
+      background: #45a049;
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+    }
+    
+    .btn-stop {
+      background: #f44336;
+      color: white;
+    }
+    
+    .btn-stop:hover:not(:disabled) {
+      background: #da190b;
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(244, 67, 54, 0.4);
+    }
+    
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .status {
+      text-align: center;
+      padding: 12px;
+      border-radius: 8px;
+      margin-top: 20px;
+      font-weight: 600;
+    }
+    
+    .status.running {
+      background: rgba(76, 175, 80, 0.3);
+    }
+    
+    .status.stopped {
+      background: rgba(244, 67, 54, 0.3);
+    }
+    
+    .status-text {
+      font-size: 14px;
+      margin-top: 10px;
+      opacity: 0.9;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🖥️ Screen Streaming Control</h1>
+    
+    <div class="settings-section">
+      <h2>Настройки трансляции</h2>
+      
+      <div class="form-group">
+        <label for="resolutionSelect">Разрешение:</label>
+        <select id="resolutionSelect">
+          <option value="native" selected>Нативное разрешение - Рекомендуется</option>
+          <option value="854x480">480p (854x480) - Минимальная задержка</option>
+          <option value="1280x720">720p (1280x720) - Оптимально</option>
+          <option value="1920x1080">1080p (1920x1080) - Высокое качество</option>
+        </select>
+        <div class="info-text">Разрешение экрана для трансляции</div>
+      </div>
+      
+      <div class="form-group">
+        <label for="bitrateSelect">Битрейт:</label>
+        <select id="bitrateSelect">
+          <option value="1000000">1 Mbps - Минимальная задержка</option>
+          <option value="1500000" selected>1.5 Mbps - Оптимально</option>
+          <option value="2000000">2 Mbps - Низкая задержка</option>
+          <option value="3000000">3 Mbps - Высокое качество</option>
+          <option value="4000000">4 Mbps - Максимальное качество</option>
+        </select>
+        <div class="info-text">Битрейт влияет на качество и задержку</div>
+      </div>
+      
+      <div class="form-group">
+        <label for="fpsSelect">Частота кадров:</label>
+        <select id="fpsSelect">
+          <option value="24">24 FPS - Минимальная задержка</option>
+          <option value="30" selected>30 FPS - Оптимально</option>
+          <option value="60">60 FPS - Плавное видео</option>
+        </select>
+        <div class="info-text">Количество кадров в секунду</div>
+      </div>
+    </div>
+    
+    <div class="server-section">
+      <h2>Управление сервером</h2>
+      
+      <div class="server-url" id="serverUrl" onclick="copyUrl()">
+        Сервер не запущен
+      </div>
+      
+      <div class="button-group">
+        <button id="startBtn" class="btn-start" onclick="startServer()">▶ Запустить сервер</button>
+        <button id="stopBtn" class="btn-stop" onclick="stopServer()" disabled>⏹ Остановить сервер</button>
+      </div>
+      
+      <div class="status stopped" id="status">
+        <div>Сервер остановлен</div>
+        <div class="status-text">Настройте параметры и запустите сервер</div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    const { ipcRenderer } = require('electron');
+    
+    // Load saved settings
+    function loadSettings() {
+      const saved = localStorage.getItem('serverSettings');
+      if (saved) {
+        try {
+          const settings = JSON.parse(saved);
+          if (settings.resolution) {
+            document.getElementById('resolutionSelect').value = settings.resolution === 'native' ? 'native' : `${settings.resolution.width}x${settings.resolution.height}`;
+          }
+          document.getElementById('bitrateSelect').value = settings.bitrate || 1500000;
+          document.getElementById('fpsSelect').value = settings.fps || 30;
+        } catch (e) {
+          console.error('Error loading settings:', e);
+        }
+      }
+    }
+    
+    // Save settings
+    function saveSettings() {
+      const resolutionValue = document.getElementById('resolutionSelect').value;
+      const resolution = resolutionValue === 'native' ? null : {
+        width: parseInt(resolutionValue.split('x')[0]),
+        height: parseInt(resolutionValue.split('x')[1])
+      };
+      
+      const settings = {
+        resolution: resolution,
+        bitrate: parseInt(document.getElementById('bitrateSelect').value),
+        fps: parseInt(document.getElementById('fpsSelect').value)
+      };
+      
+      localStorage.setItem('serverSettings', JSON.stringify(settings));
+      return settings;
+    }
+    
+    // Update UI based on server state
+    function updateUI(running, url) {
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const serverUrl = document.getElementById('serverUrl');
+      const status = document.getElementById('status');
+      
+      if (running) {
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        serverUrl.textContent = url || 'Сервер запущен';
+        serverUrl.classList.remove('inactive');
+        status.className = 'status running';
+        status.innerHTML = '<div>✓ Сервер запущен</div><div class="status-text">Откройте URL в браузере на другом устройстве</div>';
+      } else {
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        serverUrl.textContent = 'Сервер не запущен';
+        serverUrl.classList.add('inactive');
+        status.className = 'status stopped';
+        status.innerHTML = '<div>Сервер остановлен</div><div class="status-text">Настройте параметры и запустите сервер</div>';
+      }
+    }
+    
+    // Start server
+    function startServer() {
+      const settings = saveSettings();
+      ipcRenderer.send('start-server', settings);
+    }
+    
+    // Stop server
+    function stopServer() {
+      ipcRenderer.send('stop-server');
+    }
+    
+    // Copy URL to clipboard
+    function copyUrl() {
+      const url = document.getElementById('serverUrl').textContent;
+      if (url && url !== 'Сервер не запущен') {
+        navigator.clipboard.writeText(url).then(() => {
+          const serverUrl = document.getElementById('serverUrl');
+          const originalText = serverUrl.textContent;
+          serverUrl.textContent = '✓ Скопировано!';
+          setTimeout(() => {
+            serverUrl.textContent = originalText;
+          }, 2000);
+        });
+      }
+    }
+    
+    // Listen for server state updates
+    ipcRenderer.on('server-started', (event, url) => {
+      updateUI(true, url);
+    });
+    
+    ipcRenderer.on('server-stopped', () => {
+      updateUI(false);
+    });
+    
+    // Load settings on startup
+    try {
+      loadSettings();
+      updateUI(false);
+      console.log('UI initialized');
+    } catch (error) {
+      console.error('Error initializing UI:', error);
+    }
+    
+    // Save settings when changed
+    document.getElementById('resolutionSelect').addEventListener('change', saveSettings);
+    document.getElementById('bitrateSelect').addEventListener('change', saveSettings);
+    document.getElementById('fpsSelect').addEventListener('change', saveSettings);
+    
+    // Handle IPC errors
+    ipcRenderer.on('error', (event, error) => {
+      console.error('IPC error:', error);
+      const status = document.getElementById('status');
+      status.className = 'status stopped';
+      status.innerHTML = '<div>Ошибка</div><div class="status-text">' + error + '</div>';
+    });
+  </script>
+</body>
+</html>
+
